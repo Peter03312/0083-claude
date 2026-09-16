@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, ApiError } from './api'
-import { emptyStoryboard } from './blank'
+import { cloneSpec, emptyStoryboard } from './blank'
 import type {
   BlastScope,
   OutcomeDetail,
@@ -65,7 +65,7 @@ onMounted(async () => {
   await refreshList()
   try {
     revision.value = await api.latest()
-    draft.value = structuredClone(revision.value.spec)
+    draft.value = cloneSpec(revision.value.spec)
   } catch {
     // 空库：保留空白草稿，作者直接编辑后提交第一版。
     revision.value = null
@@ -81,7 +81,7 @@ async function retryConnect() {
     await loadSamples(false)
     await refreshList()
     revision.value = await api.latest().catch(() => null)
-    if (revision.value) draft.value = structuredClone(revision.value.spec)
+    if (revision.value) draft.value = cloneSpec(revision.value.spec)
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : String(err)
   } finally {
@@ -103,7 +103,7 @@ async function refreshList() {
 
 function revisionCreated(rev: Revision) {
   revision.value = rev
-  draft.value = structuredClone(rev.spec)
+  draft.value = cloneSpec(rev.spec)
   previewProof.value = null
   previewBlast.value = null
   selectedIndex.value = null
@@ -122,13 +122,13 @@ async function loadSample(key: string) {
     error.value = '未能取得内置故事板：请检查校样服务连接后重试。'
     return
   }
-  draft.value = structuredClone(sample.spec)
+  draft.value = cloneSpec(sample.spec)
   previewProof.value = null
   previewBlast.value = null
   selectedIndex.value = null
   selectedOutcome.value = null
   // 立即做一次不落库预演，让样例一打开就能看到校样；随后仍可编辑再提交。
-  await onEdit(structuredClone(sample.spec), { silent: true })
+  await onEdit(cloneSpec(sample.spec), { silent: true })
 }
 
 async function onEdit(spec: StoryboardSpec, opts: { silent?: boolean } = {}) {
@@ -183,7 +183,7 @@ async function openRevision(id: number) {
   try {
     const rev = await api.revision(id)
     revision.value = rev
-    draft.value = structuredClone(rev.spec)
+    draft.value = cloneSpec(rev.spec)
     previewProof.value = null
     selectedIndex.value = null
     selectedOutcome.value = null
