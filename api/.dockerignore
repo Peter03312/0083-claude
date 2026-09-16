@@ -1,8 +1,5 @@
-*.tsbuildinfo
-node_modules/
-dist/
 __pycache__/
 *.pyc
 .pytest_cache/
-api/data/
+data/
 *.sqlite3

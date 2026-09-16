@@ -1,0 +1,66 @@
+# 双视角声音漫游校样 —— 编排
+#
+# 常驻组件：
+#   web : Vue 3 构建产物 + nginx，宿主端口由 WEB_PORT 控制（默认 8080）
+#   api : Flask + gunicorn + SQLite，宿主端口由 API_PORT 控制（默认 8000）
+# 一次性组件：
+#   verify : 传播算法与 API 测试、前端生产构建、再经真实 HTTP 端到端核验后退出
+#
+# 用法：
+#   WEB_PORT=8080 API_PORT=8000 docker compose up --build
+#   → web/api 常驻；verify 跑完打印 “VERIFY OK” 后以 0 退出。
+#   只跑常驻组件：docker compose up --build web api
+
+services:
+  api:
+    build:
+      context: ./api
+    environment:
+      PROOF_DB: /data/proofs.sqlite3
+      SEED_SAMPLES: "1"
+    volumes:
+      - proof-data:/data
+    expose:
+      - "8000"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build:
+      context: ./web
+    depends_on:
+      api:
+        condition: service_started
+    expose:
+      - "80"
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  verify:
+    build:
+      context: .
+      dockerfile: verify/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      API_URL: http://api:8000
+      WEB_URL: http://web:80
+    restart: "no"
+
+volumes:
+  proof-data:
