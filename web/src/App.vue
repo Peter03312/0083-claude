@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, ApiError } from './api'
+import { emptyStoryboard } from './blank'
 import type {
   BlastScope,
   OutcomeDetail,
@@ -14,7 +15,7 @@ import TimelineCanvas from './components/TimelineCanvas.vue'
 
 const revision = ref<Revision | null>(null)
 const revisions = ref<{ revision_id: number; created_at: string; title: string; spec_hash: string; edit_note: string }[]>([])
-const draft = ref<StoryboardSpec | null>(null)
+const draft = ref<StoryboardSpec | null>(emptyStoryboard())
 const previewProof = ref<Revision['proof'] | null>(null)
 const previewBlast = ref<BlastScope | null>(null)
 const selectedOutcome = ref<OutcomeDetail | null>(null)
@@ -22,6 +23,9 @@ const selectedIndex = ref<number | null>(null)
 const busy = ref(false)
 const error = ref('')
 const samples = ref<Record<string, { title: string; spec: StoryboardSpec }>>({})
+// 服务连接状态：即使后端暂时不可达，编辑器与空白故事板仍立即可见。
+const connected = ref(false)
+const connecting = ref(true)
 
 // 每个异步代次：响应回来时若编号过期就丢弃，绝不贴到新修订上。
 let previewToken = 0
@@ -38,18 +42,60 @@ const activeBlast = computed(() =>
   draftDirty.value ? previewBlast.value : revision.value?.changes_from_parent ?? null,
 )
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
 onMounted(async () => {
-  samples.value = await api.samples()
+  // 后端可能尚未就绪：轮询健康，期间页面保持可编辑（空故事板）。
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try {
+      await api.health()
+      connected.value = true
+      connecting.value = false
+      break
+    } catch {
+      await sleep(1000)
+    }
+  }
+  if (!connected.value) {
+    connecting.value = false
+    error.value = '暂未连上校样服务：仍可编辑故事板，服务恢复后点击“重试连接”。'
+    return
+  }
+  await loadSamples(false)
   await refreshList()
   try {
     revision.value = await api.latest()
     draft.value = structuredClone(revision.value.spec)
   } catch {
-    // 空库：载入第一个样例草稿但不落库。
-    const first = Object.values(samples.value)[0]
-    if (first) draft.value = structuredClone(first.spec)
+    // 空库：保留空白草稿，作者直接编辑后提交第一版。
+    revision.value = null
   }
 })
+
+async function retryConnect() {
+  error.value = ''
+  connecting.value = true
+  try {
+    await api.health()
+    connected.value = true
+    await loadSamples(false)
+    await refreshList()
+    revision.value = await api.latest().catch(() => null)
+    if (revision.value) draft.value = structuredClone(revision.value.spec)
+  } catch (err) {
+    error.value = err instanceof ApiError ? err.message : String(err)
+  } finally {
+    connecting.value = false
+  }
+}
+
+async function loadSamples(showError = true) {
+  try {
+    samples.value = await api.samples()
+  } catch (err) {
+    if (showError) error.value = err instanceof ApiError ? err.message : String(err)
+  }
+}
 
 async function refreshList() {
   revisions.value = (await api.revisions()).revisions
@@ -65,26 +111,36 @@ function revisionCreated(rev: Revision) {
 }
 
 async function loadSample(key: string) {
-  const sample = samples.value[key]
-  if (!sample) return
+  error.value = ''
+  let sample = samples.value[key]
+  if (!sample) {
+    // 样例表可能因启动时的瞬时失败为空：点击时再取一次。
+    await loadSamples()
+    sample = samples.value[key]
+  }
+  if (!sample) {
+    error.value = '未能取得内置故事板：请检查校样服务连接后重试。'
+    return
+  }
   draft.value = structuredClone(sample.spec)
   previewProof.value = null
   previewBlast.value = null
-  error.value = ''
-  // 作为新修订提交，便于随后编辑出修订链。
-  await commitDraft(sample.spec, `载入示例：${key}`)
+  selectedIndex.value = null
+  selectedOutcome.value = null
+  // 立即做一次不落库预演，让样例一打开就能看到校样；随后仍可编辑再提交。
+  await onEdit(structuredClone(sample.spec), { silent: true })
 }
 
-async function onEdit(spec: StoryboardSpec) {
+async function onEdit(spec: StoryboardSpec, opts: { silent?: boolean } = {}) {
   draft.value = spec
   const token = ++previewToken
   selectedOutcome.value = null
   selectedIndex.value = null
   try {
-    const [p] = await Promise.all([api.preview(spec)])
+    const p = await api.preview(spec)
     if (token !== previewToken) return // 旧异步响应：丢弃
     previewProof.value = p
-    // 影响域必须相对某个已冻结修订；没有修订时不预演。
+    // 影响域必须相对某个已冻结修订；没有修订或草稿等于当前修订时不预演。
     if (revision.value && JSON.stringify(spec) !== JSON.stringify(revision.value.spec)) {
       const blast = await api.blastPreview(revision.value.revision_id, spec)
       if (token !== previewToken) return
@@ -94,16 +150,18 @@ async function onEdit(spec: StoryboardSpec) {
     }
   } catch (err) {
     if (token !== previewToken) return
-    if (err instanceof ApiError) {
-      error.value = err.message
-      previewProof.value = null
-      previewBlast.value = null
-    }
+    previewProof.value = null
+    previewBlast.value = null
+    if (!opts.silent && err instanceof ApiError) error.value = err.message
   }
 }
 
 async function commitDraft(spec: StoryboardSpec, note: string) {
   if (!spec) return
+  if (!connected.value) {
+    error.value = '尚未连上校样服务，无法提交冻结校样。'
+    return
+  }
   error.value = ''
   busy.value = true
   try {
@@ -112,6 +170,7 @@ async function commitDraft(spec: StoryboardSpec, note: string) {
     await refreshList()
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : String(err)
+    if (err instanceof ApiError && err.status === 0) connected.value = false
   } finally {
     busy.value = false
   }
@@ -190,9 +249,18 @@ const currentFirst = computed(() => proof.value?.first_contradiction ?? null)
     <section class="samples">
       <span>载入内置故事板：</span>
       <button v-for="(s, key) in samples" :key="key" class="ghost"
-        @click="loadSample(key)">{{ s.title }}</button>
+        @click="loadSample(String(key))">{{ s.title }}</button>
+      <span v-if="connecting" class="muted">正在连接校样服务…</span>
+      <button v-else-if="!connected" class="ghost warn" @click="retryConnect">重试连接</button>
+      <span v-else-if="!Object.keys(samples).length" class="muted">
+        未取得样例列表（仍可直接编辑下方空白故事板）
+      </span>
     </section>
 
+    <div v-if="!connected && !connecting" class="warn-banner">
+      ⚠ 校样服务暂不可达：编辑器仍可使用；提交校样前请先
+      <button class="linklike" @click="retryConnect">重试连接</button>。
+    </div>
     <div v-if="error" class="error-banner">⚠ {{ error }}</div>
 
     <main class="layout">
@@ -291,7 +359,9 @@ const currentFirst = computed(() => proof.value?.first_contradiction ?? null)
       </div>
 
       <div v-else class="col-proof placeholder">
-        等待故事板校样……
+        <p v-if="connecting">正在连接校样服务……</p>
+        <p v-else-if="!connected">服务暂不可达；连接恢复后编辑改动会自动给出预演校样。</p>
+        <p v-else>编辑左侧故事板后这里会出现校样；点击“提交为新修订”生成冻结证明。</p>
       </div>
     </main>
 
@@ -352,6 +422,11 @@ button.link { background: none; border: none; color: #1d4ed8; cursor: pointer;
 .revisions code { color: #9ca3af; font-size: 11px; }
 .time { color: #9ca3af; margin-left: auto; }
 .muted { color: #9ca3af; font-size: 12px; }
+.warn-banner { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+.linklike { background: none; border: none; color: #1d4ed8; text-decoration: underline;
+  cursor: pointer; font: inherit; padding: 0; }
+button.ghost.warn { border-color: #f59e0b; color: #92400e; }
 .contradiction { background: #fef2f2; border-radius: 7px; padding: 8px 10px;
   margin-top: 10px; font-size: 13px; }
 .all-good { color: #15803d; font-weight: 600; margin-top: 10px; font-size: 13px; }

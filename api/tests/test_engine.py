@@ -298,6 +298,70 @@ def test_ordering_prefers_earlier_story_time_then_edges():
 
 
 # --------------------------------------------------------------------------- #
+# 6) 窗口漏报回归：违规的是路线*中间*场景时也必须抓出，不能因终点合法而通过
+# --------------------------------------------------------------------------- #
+
+def test_window_violation_at_middle_scene_is_reported():
+    spec = {
+        "start": "s",
+        "scenes": [
+            {"id": "s", "location": "L", "durations": [1],
+             "choices": [{"to": "mid"}]},
+            {"id": "mid", "label": "中途画廊", "location": "L",
+             "durations": [10], "choices": [{"to": "end"}]},
+            {"id": "end", "label": "终点钟楼", "location": "L",
+             "durations": [1], "choices": []},
+        ],
+        # 窗口只挂在中途场景：第 1 分钟到达，远晚于窗口关闭。
+        "windows": [{"scene": "mid", "open": 0, "close": 0}],
+        "meetings": [{"kind": "meeting", "scene_a": "end", "scene_b": "end",
+                      "label": "终点会面同刻，不能掩盖中途违规"}],
+        "transitions": [],
+    }
+    proof = prove_revision(spec)
+    assert proof["status"] == "contradiction"
+    fc = proof["first_contradiction"]
+    assert fc["code"] == "window-late"
+    assert fc["story_time"] == 1
+    assert fc["events"][0]["scene"] == "mid"
+    # 每个结局都应记录中途违规（A、B 都经过 mid），无一漏报。
+    assert proof["counts"]["failed"] == proof["counts"]["outcomes"] == 1
+    mid_step = proof["routes"]["a"][0]["steps"][1]
+    assert mid_step["scene"] == "mid"
+    assert mid_step["window"]["state"] == "window-late"
+
+
+def test_window_violation_at_middle_scene_with_branching():
+    """一条支线中途违规、另一条不违规：只有违规路线参与的结局失败。"""
+    spec = {
+        "start": "s",
+        "scenes": [
+            {"id": "s", "location": "L", "durations": [1],
+             "choices": [{"to": "slow", "label": "慢线"},
+                         {"to": "fast", "label": "快线"}]},
+            {"id": "slow", "label": "慢线中途", "location": "L",
+             "durations": [8], "choices": [{"to": "m"}]},
+            {"id": "fast", "label": "快线中途", "location": "L",
+             "durations": [1], "choices": [{"to": "m"}]},
+            {"id": "m", "label": "会面点", "location": "L",
+             "durations": [1], "choices": []},
+        ],
+        # 窗口裁决到达：slow/fast 都在第 1 分钟到达；slow 窗口已关闭。
+        "windows": [{"scene": "slow", "open": 0, "close": 0},
+                    {"scene": "fast", "open": 0, "close": 3}],
+        "meetings": [{"kind": "meeting", "scene_a": "m", "scene_b": "m"}],
+        "transitions": [],
+    }
+    proof = prove_revision(spec)
+    failed = [o for o in proof["outcomes"] if not o["ok"]]
+    # 4 个结局中，凡任一方走 slow 的 3 个因中途窗口违规失败；快×快通过。
+    assert proof["counts"]["passed"] == 1
+    assert len(failed) == 3
+    assert all(o["code"] == "window-late" and o["story_time"] == 1 for o in failed)
+    assert proof["first_contradiction"]["events"][0]["scene"] == "slow"
+
+
+# --------------------------------------------------------------------------- #
 # 结构校验
 # --------------------------------------------------------------------------- #
 

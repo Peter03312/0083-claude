@@ -98,10 +98,12 @@ function draw() {
     ctx.textAlign = 'right'
     ctx.fillText(route.role === 'a' ? '角色 A' : '角色 B', padL - 10, y + 14)
 
-    // 场景停留条：到达→离开
+    // 场景停留条：到达→离开（窗口违规的中途场景标红）
     for (const step of route.steps) {
-      ctx.fillStyle = color + '33'
-      ctx.strokeStyle = color
+      const badWindow = step.window && step.window.state !== 'in-window'
+      const barColor = badWindow ? '#dc2626' : color
+      ctx.fillStyle = barColor + '33'
+      ctx.strokeStyle = barColor
       ctx.lineWidth = 1.5
       const x0 = x(step.arrival)
       const x1 = Math.max(x0 + 2, x(step.departure))

@@ -7,15 +7,17 @@
 * 同一场景即使被多条边合流抵达，各序列的 :class:`Route` 仍然各自独立，
   合流处绝不混成一份状态（不同来路同刻合流必须能被后续会面区分）；
 * 地点之间缺少作者给出的最短转场时，该序列在此中断并挂一个
-  ``location-unreachable`` 断层，不再继续；窗口矛盾不中断枚举，
-  因为后续会面/消息仍需要这些离散时刻参与配对裁决。
+  ``location-unreachable`` 断层，不再继续。
+* 时间窗口不在枚举期裁决（中途场景的窗口矛盾不能像旧实现那样在递归中
+  被丢弃）：每个 :class:`Step` 都保留独立的到达时刻，窗口由校样阶段
+  对路线上的**每一步**统一检查。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .model import ROLES, Storyboard, Window
+from .model import ROLES, Storyboard
 
 
 @dataclass(frozen=True)
@@ -34,7 +36,7 @@ class Step:
 
 @dataclass(frozen=True)
 class RouteFault:
-    kind: str  # location-unreachable | window-early | window-late
+    kind: str  # 仅 location-unreachable：序列在此中断
     scene_id: str
     role: str
     arrival: int
@@ -71,33 +73,6 @@ def enumerate_routes(story: Storyboard, role: str) -> list[Route]:
     return routes
 
 
-def _window_fault(
-    story: Storyboard, scene_id: str, arrival: int, role: str, edge_ord: int | None
-) -> RouteFault | None:
-    window: Window | None = story.windows.get(scene_id)
-    if window is None:
-        return None
-    if arrival < window.open:
-        return RouteFault(
-            kind="window-early",
-            scene_id=scene_id,
-            role=role,
-            arrival=arrival,
-            edge_ord=edge_ord,
-            detail=f"第 {arrival} 分钟到达 {scene_id}，早于窗口开启第 {window.open} 分钟",
-        )
-    if arrival > window.close:
-        return RouteFault(
-            kind="window-late",
-            scene_id=scene_id,
-            role=role,
-            arrival=arrival,
-            edge_ord=edge_ord,
-            detail=f"第 {arrival} 分钟到达 {scene_id}，晚于窗口关闭第 {window.close} 分钟",
-        )
-    return None
-
-
 def _walk(
     story: Storyboard,
     role: str,
@@ -110,7 +85,6 @@ def _walk(
 ) -> None:
     scene = story.scenes[scene_id]
     seq = len(prev_steps)
-    window_fault = _window_fault(story, scene_id, arrival, role, edge_ord_here)
 
     for duration_ord, duration in enumerate(scene.durations):
         departure = arrival + duration
@@ -136,7 +110,7 @@ def _walk(
                     role=role,
                     route_id="/".join(tokens),
                     steps=tuple(steps),
-                    fault=window_fault,
+                    fault=None,
                     ended=True,
                 )
             )

@@ -59,6 +59,7 @@ export interface RouteStep {
   edge_ord: number | null
   edge_label: string | null
   duration_ord: number
+  window: { open: number; close: number; state: 'in-window' | 'window-early' | 'window-late' } | null
 }
 
 export interface RouteFault {

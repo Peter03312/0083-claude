@@ -153,6 +153,21 @@ def end_to_end() -> None:
     codes = {o["code"] for o in rev_un["proof"]["outcomes"] if not o["ok"]}
     must("location-unreachable" in codes, "存在 location-unreachable 矛盾")
 
+    # 中间场景窗口漏报回归：窗口只挂在中途画廊，终点会面同刻也必须失败。
+    mid = json.loads(json.dumps(first["spec"]))
+    mid["windows"] = [{"scene": "gallery", "open": 0, "close": 0}]
+    resp_mid = s.post(API_URL + "/api/revisions", timeout=10,
+                      json={"spec": mid, "parent_id": rev_un["revision_id"],
+                            "note": "verify 中途窗口违规"})
+    must(resp_mid.status_code == 201, "中途窗口违规故事板结构合法、已提交")
+    rev_mid = resp_mid.json()
+    fc_mid = rev_mid["proof"]["first_contradiction"]
+    must(fc_mid["code"] == "window-late" and fc_mid["events"][0]["scene"] == "gallery",
+         "窗口挂在路线中间场景时同样被抓出（不漏报）")
+    must(rev_mid["proof"]["counts"]["passed"] == 1
+         and rev_mid["proof"]["counts"]["failed"] == 3,
+         "任一方经过画廊的 3 个结局失败，双连廊结局不被连坐")
+
     # 结局详情经真实 HTTP 获取，且事件时间带包含会面/到达事件。
     detail = s.get(f"{API_URL}/api/revisions/1/outcomes/0", timeout=5).json()
     kinds = {e["kind"] for e in detail["events"]}

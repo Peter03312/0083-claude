@@ -37,6 +37,13 @@ function faultBadge(code: string): string {
           <div class="step-time">
             第 {{ step.arrival }}′ 到 · 停 {{ step.duration }}′ · 第 {{ step.departure }}′ 离
           </div>
+          <div v-if="step.window" class="window"
+            :class="{ bad: step.window.state !== 'in-window' }">
+            窗口 {{ step.window.open }}~{{ step.window.close }}′：
+            <span v-if="step.window.state === 'in-window'">在窗口内</span>
+            <span v-else-if="step.window.state === 'window-early'">✕ 早于窗口开启</span>
+            <span v-else>✕ 晚于窗口关闭（中途场景也会判矛盾）</span>
+          </div>
           <div v-if="step.edge_label" class="edge">
             —{{ step.edge_label }}→
           </div>
@@ -72,6 +79,8 @@ header h3 { margin: 0 0 2px; font-size: 15px; }
 .loc { color: #6b7280; font-size: 12px; }
 .step-time { color: #374151; margin-top: 2px; }
 .edge { color: #0f766e; font-size: 12px; margin-top: 2px; }
+.window { color: #15803d; font-size: 12px; margin-top: 2px; }
+.window.bad { color: #b91c1c; font-weight: 600; }
 .timeline-wrap {
   grid-column: 1 / -1;
   border: 1px solid #e5e7eb;

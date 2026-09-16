@@ -26,10 +26,15 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(BASE + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
+  let resp: Response
+  try {
+    resp = await fetch(BASE + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...init,
+    })
+  } catch (err) {
+    throw new ApiError(0, 'network', `无法连接校样服务（${BASE}）：${String(err)}`)
+  }
   const body = await resp.json().catch(() => ({}))
   if (!resp.ok) {
     throw new ApiError(resp.status, body.error ?? 'http', body.message ?? resp.statusText)

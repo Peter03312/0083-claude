@@ -165,17 +165,16 @@ def _outcome_index(routes_a: list[Route], routes_b: list[Route],
 def check_pair(story: Storyboard, route_a: Route, route_b: Route,
                outcome_index: int) -> list[Contradiction]:
     found: list[Contradiction] = []
+    edges_pair = (route_a.edges_walked, route_b.edges_walked)
 
-    # 1) 路线自身的断层与窗口。
-    for route, other in ((route_a, route_b), (route_b, route_a)):
-        edges_pair = (route_a.edges_walked, route_b.edges_walked)
+    # 1a) 转场断层（缺最短转场时序列已在枚举期中断）。
+    for route in (route_a, route_b):
         if route.fault is not None:
             found.append(
                 Contradiction(
                     code=route.fault.kind,
                     detail=route.fault.detail,
-                    story_time=None if route.fault.kind == "location-unreachable"
-                    else route.fault.arrival,
+                    story_time=None,
                     diff_minutes=None,
                     role=route.role,
                     edge_ord=route.fault.edge_ord,
@@ -185,6 +184,47 @@ def check_pair(story: Storyboard, route_a: Route, route_b: Route,
                     route_b=route_b.route_id,
                     outcome_index=outcome_index,
                     events=_fault_events(story, route),
+                )
+            )
+
+    # 1b) 窗口：对路线上的**每一步**到达时刻裁决，中途场景也不能漏报。
+    for route in (route_a, route_b):
+        for step in route.steps:
+            window = story.windows.get(step.scene_id)
+            if window is None:
+                continue
+            if window.open <= step.arrival <= window.close:
+                continue
+            code = "window-early" if step.arrival < window.open else "window-late"
+            found.append(
+                Contradiction(
+                    code=code,
+                    detail=(
+                        f"第 {step.arrival} 分钟到达{step.label or step.scene_id}"
+                        f"（{step.location}），"
+                        + (
+                            f"早于窗口开启第 {window.open} 分钟"
+                            if code == "window-early"
+                            else f"晚于窗口关闭第 {window.close} 分钟，"
+                                 f"超出 {step.arrival - window.close} 分钟"
+                        )
+                    ),
+                    story_time=step.arrival,
+                    diff_minutes=(
+                        window.open - step.arrival if code == "window-early"
+                        else step.arrival - window.close
+                    ),
+                    role=route.role,
+                    edge_ord=step.edge_ord,
+                    edges_a=edges_pair[0],
+                    edges_b=edges_pair[1],
+                    route_a=route_a.route_id,
+                    route_b=route_b.route_id,
+                    outcome_index=outcome_index,
+                    events=(
+                        EventView("arrival", step.arrival, route.role,
+                                  step.scene_id, step.location, step.label),
+                    ),
                 )
             )
 
@@ -354,12 +394,6 @@ def _fault_events(story: Storyboard, route: Route) -> tuple[EventView, ...]:
             EventView("attempted-edge", None, route.role, target.id, target.location,
                       f"试图经第 {route.fault.edge_ord} 条选择跨越，缺少最短转场")
         )
-    elif route.fault:
-        events.append(
-            EventView("arrival", route.fault.arrival, route.role, route.fault.scene_id,
-                      last.location if route.fault.scene_id == last.scene_id else None,
-                      route.fault.detail)
-        )
     return tuple(events)
 
 
@@ -413,6 +447,15 @@ def route_json(story: Storyboard, route: Route) -> dict:
             prev_scene = story.scenes[steps[-1]["scene"]]
             if step.edge_ord < len(prev_scene.choices):
                 edge_label = prev_scene.choices[step.edge_ord].label
+        window = story.windows.get(step.scene_id)
+        window_state = None
+        if window is not None:
+            if step.arrival < window.open:
+                window_state = "window-early"
+            elif step.arrival > window.close:
+                window_state = "window-late"
+            else:
+                window_state = "in-window"
         steps.append(
             {
                 "seq": step.seq,
@@ -425,6 +468,11 @@ def route_json(story: Storyboard, route: Route) -> dict:
                 "edge_ord": step.edge_ord,
                 "edge_label": edge_label,
                 "duration_ord": step.duration_ord,
+                "window": (
+                    None if window is None
+                    else {"open": window.open, "close": window.close,
+                          "state": window_state}
+                ),
             }
         )
     return {
